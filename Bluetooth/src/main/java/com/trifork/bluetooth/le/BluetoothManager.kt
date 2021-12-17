@@ -256,40 +256,37 @@ class BluetoothManager(private val context: Context, private val configuration: 
 
         return object : BluetoothGattCallback() {
             override fun onConnectionStateChange(gatt: BluetoothGatt?, status: Int, newState: Int) {
-                if (connectedGatt[connection] != gatt) {
-                    if (newState == BluetoothProfile.STATE_DISCONNECTED) gatt?.close()
-                    return
-                }
+                val that = this
+                mainScope.launch {
+                    if (connectedGatt[connection] != gatt) {
+                        if (newState == BluetoothProfile.STATE_DISCONNECTED) gatt?.close()
+                        return@launch
+                    }
 
-                d("BluetoothGattCallback.onConnectionStateChange: $status -> $newState")
-                when {
-                    newState == BluetoothProfile.STATE_CONNECTED && shouldConnect -> {
-                        shouldConnect = false
-                        retries = 0
-                        gatt ?: run {
-                            on(Failure.GattCallback(), connection)
-                            return
-                        }
+                    d("BluetoothGattCallback.onConnectionStateChange: $status -> $newState")
+                    when {
+                        newState == BluetoothProfile.STATE_CONNECTED && shouldConnect -> {
+                            shouldConnect = false
+                            retries = 0
+                            gatt ?: run {
+                                on(Failure.GattCallback(), connection)
+                                return@launch
+                            }
 
-                        mainScope.launch {
                             i("Connected to device: ${connection.device.address}. Discovering services...")
                             gatt.discoverServices()
+
                         }
-                    }
-                    (status != GATT_ERROR && newState == BluetoothProfile.STATE_DISCONNECTED) || retries > 1 -> {
-                        if (shouldConnect) {
-                            connectCallback.on(Failure.Bluetooth(Reason.OperationFailed))
-                        }
-                        onDisconnected(connection, newState)
-                        mainScope.launch {
+                        (status != GATT_ERROR && newState == BluetoothProfile.STATE_DISCONNECTED) || retries > 1 -> {
+                            if (shouldConnect) {
+                                connectCallback.on(Failure.Bluetooth(Reason.OperationFailed))
+                            }
+                            onDisconnected(connection, newState)
                             connectedGatt.remove(connection)?.close()
                             communicationCallbacks.remove(connection)
                             listeners.remove(connection)
                         }
-                    }
-                    status == GATT_ERROR || newState == GATT_ERROR -> {
-                        val that = this
-                        mainScope.launch {
+                        status == GATT_ERROR || newState == GATT_ERROR -> {
                             retries += 1
                             w("Changed connection state from: $status to $newState for device: ${connection.device.address}. Retry attempt #$retries...")
 
@@ -598,4 +595,3 @@ class BluetoothManager(private val context: Context, private val configuration: 
         }
     }
 }
-
