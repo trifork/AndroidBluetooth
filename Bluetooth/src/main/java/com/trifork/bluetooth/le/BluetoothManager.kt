@@ -4,15 +4,14 @@ package com.trifork.bluetooth.le
 
 import android.annotation.TargetApi
 import android.bluetooth.*
+import android.bluetooth.BluetoothDevice.TRANSPORT_LE
 import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
 import android.os.Build
 import com.trifork.bluetooth.le.BluetoothManager.Failure.Reason
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.*
 import java.util.*
 import kotlin.concurrent.schedule
 import android.bluetooth.BluetoothManager as AndroidBluetoothManager
@@ -34,7 +33,7 @@ class BluetoothManager(private val context: Context, private val configuration: 
 
     val isScanning get() = scanCallback != null
 
-    val isEnabled get() = manager.adapter?.isEnabled == true
+    val adapter: BluetoothAdapter get() = manager.adapter
 
     fun startScan(
         filters: List<ScanFilter>? = null,
@@ -80,13 +79,7 @@ class BluetoothManager(private val context: Context, private val configuration: 
         val delegate = createCommunicationDelegate(device, connection, callback)
 
         d("Creating connection $connection to ${device.address}...")
-        val gatt = device.connectGatt(context, false, delegate)
-        if (gatt != null) {
-            communicationCallbacks[connection] = delegate
-            connectedGatt[connection] = gatt
-        } else {
-            callback.on(Failure.Bluetooth(Reason.OperationFailed))
-        }
+        connect(device, delegate, connection, callback)
     }
 
     fun add(connection: Connection, listener: Connection.CommunicationCallback) = mainScope.launch {
@@ -263,6 +256,14 @@ class BluetoothManager(private val context: Context, private val configuration: 
 
         return object : BluetoothGattCallback() {
             override fun onConnectionStateChange(gatt: BluetoothGatt?, status: Int, newState: Int) {
+                val managedGatt = runBlocking(mainScope.coroutineContext) {
+                    connectedGatt[connection]
+                }
+                if (managedGatt != gatt) {
+                    if (newState == BluetoothProfile.STATE_DISCONNECTED) gatt?.close()
+                    return
+                }
+
                 d("BluetoothGattCallback.onConnectionStateChange: $status -> $newState")
                 when {
                     newState == BluetoothProfile.STATE_CONNECTED && shouldConnect -> {
@@ -278,7 +279,12 @@ class BluetoothManager(private val context: Context, private val configuration: 
                             gatt.discoverServices()
                         }
                     }
-                    (status != GATT_ERROR && newState == BluetoothProfile.STATE_DISCONNECTED) || retries > 2 -> {
+                    (status != GATT_ERROR && newState == BluetoothProfile.STATE_DISCONNECTED) || retries > 1 -> {
+                        if (shouldConnect) {
+                            mainScope.launch {
+                                connectCallback.on(Failure.Bluetooth(Reason.OperationFailed))
+                            }
+                        }
                         onDisconnected(connection, newState)
                         mainScope.launch {
                             connectedGatt.remove(connection)?.close()
@@ -287,16 +293,14 @@ class BluetoothManager(private val context: Context, private val configuration: 
                         }
                     }
                     status == GATT_ERROR || newState == GATT_ERROR -> {
-                        connectedGatt.remove(connection)?.close()
-                        Thread.sleep(200L)
-                        retries += 1
-                        w("Changed connection state from: $status to $newState for device: ${connection.device.address}. Retry attempt #$retries...")
-                        val retryGatt = device.connectGatt(context, false, this)
-                        if (retryGatt != null) {
-                            communicationCallbacks[connection] = this
-                            connectedGatt[connection] = retryGatt
-                        } else {
-                            connectCallback.on(Failure.Bluetooth(Reason.OperationFailed))
+                        val that = this
+                        mainScope.launch {
+                            retries += 1
+                            w("Changed connection state from: $status to $newState for device: ${connection.device.address}. Retry attempt #$retries...")
+
+                            connectedGatt.remove(connection)?.disconnect()
+                            delay(200L)
+                            connect(device, that, connection, connectCallback)
                         }
                     }
                 }
@@ -429,6 +433,26 @@ class BluetoothManager(private val context: Context, private val configuration: 
                     on(Failure.Bluetooth(Reason.SystemError(status)), connection)
                 }
             }
+        }
+    }
+
+    private fun connect(
+        device: BluetoothDevice,
+        delegate: BluetoothGattCallback,
+        connection: Connection,
+        connectCallback: ConnectCallback
+    ) {
+        val gatt = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            device.connectGatt(context, false, delegate, TRANSPORT_LE)
+        } else {
+            device.connectGatt(context, false, delegate)
+        }
+
+        if (gatt != null) {
+            communicationCallbacks[connection] = delegate
+            connectedGatt[connection] = gatt
+        } else {
+            connectCallback.on(Failure.Bluetooth(Reason.OperationFailed))
         }
     }
 
@@ -579,4 +603,3 @@ class BluetoothManager(private val context: Context, private val configuration: 
         }
     }
 }
-
