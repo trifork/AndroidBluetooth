@@ -279,6 +279,7 @@ class BluetoothManager(private val context: Context, private val configuration: 
                             gatt.discoverServices()
                         }
                     }
+
                     (status != GATT_ERROR && newState == BluetoothProfile.STATE_DISCONNECTED) || retries > 1 -> {
                         if (shouldConnect) {
                             mainScope.launch {
@@ -292,6 +293,7 @@ class BluetoothManager(private val context: Context, private val configuration: 
                             listeners.remove(connection)
                         }
                     }
+
                     status == GATT_ERROR || newState == GATT_ERROR -> {
                         val that = this
                         mainScope.launch {
@@ -487,7 +489,15 @@ class BluetoothManager(private val context: Context, private val configuration: 
     }
 
     private fun onWrite(characteristic: BluetoothGattCharacteristic, connection: Connection) {
-        v("Did write to characteristic: ${characteristic.uuid} for device: ${connection.device.address}.")
+
+        v(
+            "Did write to characteristic: ${characteristic.uuid} with data:${
+                configuration.hexFormatter(
+                    characteristic.value
+                )
+            } for device: ${connection.device.address}."
+        )
+
         inform(connection) { it.onWrite(characteristic) }
     }
 
